@@ -1,18 +1,40 @@
 workflows:
   ios-workflow:
-    name: iOS Build
+    name: iOS Build and Upload
     max_build_duration: 60
     instance_type: mac_mini_m2
+
+    integrations:
+      app_store_connect: Cartzlink
+
     environment:
       flutter: stable
       xcode: latest
       cocoapods: default
+      ios_signing:
+        distribution_type: app_store
+        bundle_identifier: com.cartzlink.crm
+
     scripts:
       - name: Get packages
         script: flutter pub get
+
       - name: Install pods
-        script: find . -name "Podfile" -execdir pod install \;
-      - name: Build iOS
-        script: flutter build ios --release --no-codesign
+        script: |
+          find . -name "Podfile" -execdir pod install \;
+
+      - name: Set up code signing
+        script: xcode-project use-profiles
+
+      - name: Build signed IPA
+        script: |
+          flutter build ipa --release \
+            --export-options-plist=/Users/builder/export_options.plist
+
     artifacts:
-      - build/ios/iphoneos/*.app
+      - build/ios/ipa/*.ipa
+      - /tmp/xcodebuild_logs/*.log
+
+    publishing:
+      app_store_connect:
+        auth: integration
