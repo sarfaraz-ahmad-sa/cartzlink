@@ -42,8 +42,11 @@ String ensureHttps(String value) {
 
 String originOrDefault(String value, {String fallback = ''}) {
   try {
-    final uri = Uri.parse(ensureHttps(value));
-    if (uri.host.isEmpty) return fallback;
+    final trimmed = value.trim();
+    final uri = Uri.parse(trimmed.contains('://') ? trimmed : ensureHttps(trimmed));
+    if (uri.host.isEmpty || (uri.scheme != 'http' && uri.scheme != 'https')) {
+      return fallback;
+    }
     return Uri(
       scheme: uri.scheme.isEmpty ? 'https' : uri.scheme,
       host: uri.host,

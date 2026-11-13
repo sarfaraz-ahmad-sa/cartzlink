@@ -143,7 +143,11 @@ class _LoginScreenState extends State<LoginScreen> {
         return;
       }
 
-      final baseUrl = host;
+      final baseUrl = originOrDefault(_hostController.text);
+      if (baseUrl.isEmpty) {
+        setState(() => _error = 'Please enter a valid HTTP or HTTPS ERP host.');
+        return;
+      }
 
       await _storage.setString(
         StorageKeys.erpLastUser,

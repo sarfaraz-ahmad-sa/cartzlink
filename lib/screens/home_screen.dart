@@ -31,59 +31,73 @@ class _HomeScreenState extends State<HomeScreen> {
   bool _readyToBrowse = false;
   int _progress = 0;
   String? _domainError;
+  String? _pageError;
   List<String> _recentDomains = <String>[];
 
   @override
   void initState() {
     super.initState();
 
-    _webView = WebViewController()
-      ..setJavaScriptMode(JavaScriptMode.unrestricted)
-      ..setBackgroundColor(Colors.white)
-      ..setNavigationDelegate(
-        NavigationDelegate(
-          onProgress: (progress) {
-            if (!mounted || !_readyToBrowse) return;
-            setState(() {
-              _progress = progress.clamp(0, 100).toInt();
-              _loading = progress < 100;
-            });
-          },
-          onPageStarted: (_) {
-            if (!mounted) return;
-            setState(() {
-              _loading = true;
-              _progress = 0;
-            });
-          },
-          onPageFinished: (url) async {
-            if (mounted) {
-              setState(() {
-                _loading = false;
-                _progress = 100;
-              });
-            }
-            await _captureSameOriginUrl(url, saveAsLastDomain: true);
-          },
-          onNavigationRequest: (request) async {
-            await _captureSameOriginUrl(request.url);
-            return NavigationDecision.navigate;
-          },
-          onWebResourceError: (_) {
-            if (!mounted) return;
-            setState(() {
-              _loading = false;
-              _progress = 0;
-            });
-          },
-        ),
-      );
-
+    _webView = WebViewController();
     _initialize();
   }
 
+  Future<void> _configureWebView() async {
+    await _webView.setJavaScriptMode(JavaScriptMode.unrestricted);
+    await _webView.setNavigationDelegate(
+      NavigationDelegate(
+        onProgress: (progress) {
+          if (!mounted || !_readyToBrowse || _pageError != null) return;
+          setState(() {
+            _progress = progress.clamp(0, 100).toInt();
+            _loading = progress < 100;
+          });
+        },
+        onPageStarted: (_) {
+          if (!mounted) return;
+          setState(() {
+            _pageError = null;
+            _loading = true;
+            _progress = 0;
+          });
+        },
+        onPageFinished: (url) async {
+          if (!mounted || _pageError != null) return;
+          setState(() {
+            _loading = false;
+            _progress = 100;
+          });
+          await _captureSameOriginUrl(url, saveAsLastDomain: true);
+        },
+        onNavigationRequest: (request) async {
+          if (request.isMainFrame) await _captureSameOriginUrl(request.url);
+          return NavigationDecision.navigate;
+        },
+        onWebResourceError: (error) {
+          if (error.isForMainFrame == false) return;
+          _showPageError(
+            'Could not open the ERP page (${error.errorCode}). '
+            '${error.description}',
+          );
+        },
+      ),
+    );
+  }
+
   Future<void> _initialize() async {
-    await _enableWebAuthentication();
+    if (mounted) setState(() => _domainSyncing = true);
+    try {
+      await _configureWebView();
+      await _enableWebAuthentication();
+    } catch (_) {
+      if (!mounted) return;
+      setState(() {
+        _domainSyncing = false;
+        _loading = false;
+        _domainError = 'Unable to start the ERP browser.';
+      });
+      return;
+    }
     await _domainService.loadCachedDomains();
     await _loadRecentDomains();
     await _refreshDomainWhitelist(bootstrapAfterSuccess: true);
@@ -187,7 +201,7 @@ class _HomeScreenState extends State<HomeScreen> {
       return;
     }
 
-    final resolvedBase = originOrDefault(host);
+    final resolvedBase = originOrDefault(candidate);
     if (resolvedBase.isEmpty) {
       if (!mounted) return;
       setState(() {
@@ -235,14 +249,7 @@ class _HomeScreenState extends State<HomeScreen> {
     await _storage.setString(StorageKeys.crmBaseUrl, _baseUrl);
     await _storage.setString(StorageKeys.crmLastUrl, target);
 
-    if (mounted) {
-      setState(() {
-        _loading = true;
-        _progress = 0;
-      });
-    }
-
-    await _webView.loadRequest(Uri.parse(target));
+    await _loadPage(Uri.parse(target));
   }
 
   Future<void> _captureSameOriginUrl(
@@ -307,7 +314,7 @@ class _HomeScreenState extends State<HomeScreen> {
     await _storage.setString(StorageKeys.crmBaseUrl, nextBase);
     await _storage.setString(StorageKeys.crmLastUrl, nextBase);
 
-    await _webView.loadRequest(Uri.parse(nextBase));
+    await _loadPage(Uri.parse(nextBase));
   }
 
   void _showMessage(String message) {
@@ -361,13 +368,39 @@ class _HomeScreenState extends State<HomeScreen> {
       return;
     }
 
-    if (mounted) {
-      setState(() {
-        _loading = true;
-        _progress = 0;
-      });
+    if (_pageError != null) {
+      await _loadPage(Uri.parse(_initialUrl));
+      return;
     }
-    await _webView.reload();
+    await _loadPage();
+  }
+
+  Future<void> _loadPage([Uri? target]) async {
+    if (!mounted) return;
+    setState(() {
+      _pageError = null;
+      _loading = true;
+      _progress = 0;
+    });
+
+    try {
+      if (target == null) {
+        await _webView.reload();
+      } else {
+        await _webView.loadRequest(target);
+      }
+    } catch (_) {
+      _showPageError('Could not start loading the ERP page.');
+    }
+  }
+
+  void _showPageError(String message) {
+    if (!mounted || !_readyToBrowse) return;
+    setState(() {
+      _pageError = message;
+      _loading = false;
+      _progress = 0;
+    });
   }
 
   Future<void> _logout() async {
@@ -388,6 +421,7 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   Widget _buildDomainError() {
+    final pageError = _pageError;
     return Center(
       child: Padding(
         padding: const EdgeInsets.all(24),
@@ -403,7 +437,7 @@ class _HomeScreenState extends State<HomeScreen> {
               ),
               const SizedBox(height: 14),
               Text(
-                _domainError ?? 'Unable to verify approved domains.',
+                pageError ?? _domainError ?? 'Unable to verify approved domains.',
                 textAlign: TextAlign.center,
                 style: const TextStyle(fontSize: 15),
               ),
@@ -411,9 +445,7 @@ class _HomeScreenState extends State<HomeScreen> {
               ElevatedButton.icon(
                 onPressed: _domainSyncing
                     ? null
-                    : () => _refreshDomainWhitelist(
-                          bootstrapAfterSuccess: true,
-                        ),
+                    : (_readyToBrowse ? _reload : _initialize),
                 icon: const Icon(Icons.refresh),
                 label: Text(
                   _domainSyncing ? 'Checking…' : 'Retry',
@@ -525,7 +557,17 @@ class _HomeScreenState extends State<HomeScreen> {
             Expanded(
               child: !_readyToBrowse
                   ? _buildDomainError()
-                  : WebViewWidget(controller: _webView),
+                  : Stack(
+                      fit: StackFit.expand,
+                      children: [
+                        WebViewWidget(controller: _webView),
+                        if (_pageError != null)
+                          ColoredBox(
+                            color: Theme.of(context).scaffoldBackgroundColor,
+                            child: _buildDomainError(),
+                          ),
+                      ],
+                    ),
             ),
           ],
         ),
